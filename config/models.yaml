@@ -1,0 +1,48 @@
+# Model Configuration
+
+models:
+  bedrock:
+    titan:
+      model_id: "amazon.titan-text-express-v1"
+      region: "us-east-1"
+      default_max_tokens: 512
+      default_temperature: 0.7
+      enabled: true
+    
+    llama:
+      model_id: "meta.llama3-8b-instruct-v1:0"
+      region: "us-west-2"
+      default_max_tokens: 512
+      default_temperature: 0.5
+      enabled: true
+    
+    claude:
+      model_id: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+      region: "us-east-1"
+      default_max_tokens: 512
+      default_temperature: 0.7
+      enabled: true
+  
+  openai:
+    gpt4o_mini:
+      model_id: "gpt-4o-mini"
+      default_max_tokens: 512
+      default_temperature: 0.7
+      enabled: true
+  
+  gemini:
+    flash_lite:
+      model_id: "gemini-2.0-flash-lite"
+      default_max_tokens: 512
+      default_temperature: 0.7
+      enabled: false  # Disabled due to empty response issue
+
+# PDF Processing (Future Implementation)
+pdf_processing:
+  cache_enabled: true
+  cache_ttl_hours: 24
+  max_file_size_mb: 50
+  supported_formats:
+    - pdf
+    - docx
+    - txt
