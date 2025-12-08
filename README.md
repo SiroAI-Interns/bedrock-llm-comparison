@@ -18,7 +18,7 @@ A production-ready Python application for comparing responses across multiple La
 
 ### 1. Clone Repository
 
-git clone https://github.com/SIROAI-Interns/bedrock-llm-comparison.git
+git clone https://github.com/SiroAI-Interns/bedrock-llm-comparison.git
 cd bedrock-llm-comparison
 
 ### 2. Environment Setup
