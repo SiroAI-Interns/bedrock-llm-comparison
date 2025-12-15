@@ -9,6 +9,8 @@ from datetime import datetime
 from app.core.bedrock_client import BedrockClient
 from app.core.openai_client import PaidModelsClient
 from app.models.validation_schema import ValidationDocument, ValidationRule, MetaData, Tag
+from app.models.validation_schema import LLMRuleExtractionResponse
+
 
 
 class RuleExtractor:
@@ -19,12 +21,13 @@ class RuleExtractor:
         self.bedrock_client = None
         self.openai_client = None
         
-        if self.use_model in ["claude", "titan", "llama","deepseek"]:
+        if self.use_model in ["claude", "titan", "llama","deepseek","mistral"]:
             model_map = {
                 "claude": ("anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic"),
                 "titan": ("amazon.titan-text-express-v1", "titan"),
                 "llama": ("meta.llama3-70b-instruct-v1:0", "llama"),
                 "deepseek": ("us.deepseek.r1-v1:0", "deepseek"),
+                "mistral": ("mistral.mistral-7b-instruct-v0:2", "mistral")
             }
             # In extract_rules_from_page, for Llama add:
             model_id, model_type = model_map[self.use_model]
@@ -59,7 +62,6 @@ class RuleExtractor:
 
         # MODEL-SPECIFIC PROMPT ADJUSTMENTS
         if self.use_model == "gemini":
-            # Gemini prefers looser, conversational instructions
             prompt = base_prompt + """
 
     If there are no rules on this page, return: {"rules": []}
@@ -76,8 +78,7 @@ class RuleExtractor:
     }
     """
         
-        elif self.use_model in ["llama", "titan"]:
-            # Llama/Titan need very strict formatting instructions
+        elif self.use_model in ["llama", "titan", "mistral"]:  # Add mistral here
             prompt = base_prompt + """
 
     If there are no rules on this page, return:
@@ -125,8 +126,40 @@ class RuleExtractor:
         try:
             max_tokens = 3000 if self.use_model == "deepseek" else 2000
 
+            # ===== MISTRAL: Special handling with instruction format =====
+            if self.use_model == "mistral" and self.bedrock_client:
+                # Wrap prompt in Mistral's instruction format
+                formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+                
+                import boto3
+                import json
+                
+                bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-1")
+                
+                native_request = {
+                    "prompt": formatted_prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "top_k": 50
+                }
+                
+                response = bedrock_runtime.invoke_model(
+                    modelId="mistral.mistral-7b-instruct-v0:2",
+                    body=json.dumps(native_request)
+                )
+                
+                response_body = json.loads(response["body"].read())
+                
+                # Mistral returns outputs array
+                outputs = response_body.get("outputs", [])
+                if outputs:
+                    response_text = outputs[0].get("text", "")
+                else:
+                    response_text = ""
+
             # ===== LLAMA: Special handling =====
-            if self.use_model == "llama" and self.bedrock_client:
+            elif self.use_model == "llama" and self.bedrock_client:
                 formatted_prompt = f"""<|begin_of_text|><|start_header_id|>user<|end_header_id|>
     {prompt}
     <|eot_id|>
@@ -153,17 +186,79 @@ class RuleExtractor:
                 response_text = model_response.get("generation", "")
 
             # ===== GEMINI =====
+            # ===== GEMINI: Use structured output with Pydantic schema =====
             elif self.use_model == "gemini":
                 from google import genai
-
+                from app.models.validation_schema import LLMRuleExtractionResponse  # Import the schema
+                import time
+                
                 gemini_client = genai.Client()
                 
-                response = gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
-                )
+                # Simplified prompt for structured output
+                structured_prompt = f"""Extract validation rules from this pharmaceutical regulatory guideline page.
+
+            Page: {page_number}
+
+            Instructions:
+            - Find sentences with "should", "must", "shall", "required to", or "is expected to"
+            - For each rule, provide:
+            * rule: The full requirement text
+            * pretext: Brief context about when this applies
+            * tags: Leave as empty array
+
+            Page content:
+            {page_text[:2500]}
+            """
                 
-                response_text = response.text
+                # Retry logic for rate limits
+                max_retries = 3
+                retry_count = 0
+                
+                while retry_count < max_retries:
+                    try:
+                        response = gemini_client.models.generate_content(
+                            model="gemini-2.5-flash-lite",  # or gemini-2.5-flash for paid tier
+                            contents=structured_prompt,
+                            config={
+                                "response_mime_type": "application/json",
+                                "response_json_schema": LLMRuleExtractionResponse.model_json_schema(),
+                            }
+                        )
+                        
+                        # Parse with Pydantic - guaranteed valid JSON
+                        parsed_response = LLMRuleExtractionResponse.model_validate_json(response.text)
+                        
+                        # Convert to list of dicts (matching your existing format)
+                        rules = []
+                        for rule in parsed_response.rules:
+                            rule_dict = rule.model_dump()
+                            rule_dict["page_number"] = page_number
+                            rules.append(rule_dict)
+                        
+                        return rules
+                        
+                    except Exception as e:
+                        error_str = str(e)
+                        
+                        # Check for rate limit
+                        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                            retry_count += 1
+                            
+                            import re
+                            delay_match = re.search(r"'retryDelay': '(\d+)s'", error_str)
+                            wait_time = int(delay_match.group(1)) if delay_match else 5
+                            
+                            print(f"[WARN] Gemini rate limit hit on page {page_number}. Waiting {wait_time}s... (retry {retry_count}/{max_retries})")
+                            time.sleep(wait_time)
+                        else:
+                            # Non-rate-limit error
+                            print(f"[ERROR] Gemini call failed for page {page_number}: {error_str[:200]}")
+                            return []
+                
+                # Exhausted retries
+                print(f"[ERROR] Gemini rate limit exceeded after {max_retries} retries on page {page_number}")
+                return []
+
 
             # ===== OPENAI =====
             elif self.openai_client and self.use_model == "openai":
@@ -199,6 +294,7 @@ class RuleExtractor:
             rule["page_number"] = page_number
 
         return rules
+
 
 
 

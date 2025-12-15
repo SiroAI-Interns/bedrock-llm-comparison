@@ -102,7 +102,7 @@ def main():
     parser.add_argument(
         "--model",
         default="claude",
-        choices=["claude", "openai", "titan", "llama","deepseek","gemini"],
+        choices=["claude", "openai", "titan", "llama","deepseek","gemini","mistral"],
         help="LLM model to use for extraction"
     )
     parser.add_argument(

@@ -6,6 +6,36 @@ from datetime import datetime
 import uuid
 
 
+# ============================================================================
+# LLM RESPONSE SCHEMAS (for structured output from Gemini/OpenAI)
+# ============================================================================
+
+class LLMValidationRule(BaseModel):
+    """Simplified rule schema for LLM extraction (Gemini structured output)."""
+    rule: str = Field(
+        description="The full sentence(s) describing the requirement, recommendation, or expectation."
+    )
+    pretext: str = Field(
+        description="1-2 sentences explaining when/where this rule applies, in plain language."
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Array of tags (leave empty, will be populated later)."
+    )
+
+
+class LLMRuleExtractionResponse(BaseModel):
+    """Response schema for LLM rule extraction."""
+    rules: List[LLMValidationRule] = Field(
+        default_factory=list,
+        description="List of all validation rules found on this page."
+    )
+
+
+# ============================================================================
+# FULL DOCUMENT SCHEMAS (for MongoDB storage with tags)
+# ============================================================================
+
 class Tag(BaseModel):
     """Tag schema for rule classification."""
     category: str
@@ -21,11 +51,11 @@ class Tag(BaseModel):
 
 
 class ValidationRule(BaseModel):
-    """Individual validation rule schema."""
+    """Individual validation rule schema (with full tags)."""
     page_number: str
     rule: str
     pretext: str
-    tags: List[Tag]
+    tags: List[Tag]  # Full Tag objects for final output
     rule_id: str = Field(default_factory=lambda: f"rid-{uuid.uuid4()}")
 
 
@@ -51,6 +81,6 @@ class ValidationDocument(BaseModel):
     state: str = "PROCESSING_RULES"
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
-    meta_data: MetaData
+    meta_data : MetaData
     
     model_config = ConfigDict(populate_by_name=True)

@@ -12,7 +12,7 @@ from config.settings import settings
 
 
 # llama = your Llama 70B wiring; gemini = your Gemini client wiring
-MODELS = ["claude", "openai", "deepseek", "llama", "titan", "gemini"]
+MODELS = ["claude", "openai", "deepseek", "llama", "titan", "gemini","mistral"]
 
 
 def process_pdfs_all_models(folder_path: str, output_dir: str = None):
