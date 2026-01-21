@@ -65,3 +65,7 @@ logs/
 *.pid
 *.seed
 *.pid.lock
+
+# Vector databases (large files - rebuild with rebuild_index.py)
+data/vectordb*/
+!data/vectordb_faiss_medcpt/.gitkeep

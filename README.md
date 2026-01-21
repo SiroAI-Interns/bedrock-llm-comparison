@@ -1,272 +1,197 @@
-# Bedrock LLM Comparison Platform
+# Medical Protocol RAG System
 
-Multi-model LLM comparison and analysis platform supporting AWS Bedrock, OpenAI, and Google Gemini.
+A multi-agent RAG (Retrieval-Augmented Generation) system for querying medical protocols and clinical trial guidelines.
 
-## Overview
+## Features
 
-A production-ready Python application for comparing responses across multiple Large Language Models (LLMs) with automated reporting, batch processing, and database integration capabilities.
+- **MedCPT Embeddings**: Medical-optimized text embeddings (768 dimensions)
+- **Cross-Encoder Reranking**: Improved precision with semantic re-scoring
+- **4-Agent Pipeline**: Research → Generator → Reviewer → Chairman
+- **Multiple LLM Support**: Claude, Llama, Mistral, GPT-OSS, Titan
+- **Auto-Save Results**: All queries saved to `data/output/`
 
-## Prerequisites
-
-- Python 3.8+
-- AWS Account with Bedrock access
-- OpenAI API Key (optional)
-- Google Gemini API Key (optional)
-- PostgreSQL database (optional, for prompt management)
+---
 
 ## Quick Start
 
-### 1. Clone Repository
+### 1. Install Dependencies
 
-git clone https://github.com/SiroAI-Interns/bedrock-llm-comparison.git
-cd bedrock-llm-comparison
-
-### 2. Environment Setup
-
-Create virtual environment:
-python3 -m venv venv
-source venv/bin/activate
-
-Install dependencies:
-make install
-
-Or manually:
+```bash
 pip install -r requirements.txt
+```
 
-### 3. Configuration
+### 2. Set Up AWS Credentials
 
-Copy environment template:
+```bash
 cp .env.example .env
+# Edit .env with your AWS credentials
+```
 
-Edit .env with your credentials using your preferred editor.
-
-Required environment variables:
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-OPENAI_API_KEY=your_openai_key
-GEMINI_API_KEY=your_gemini_key
-
-### 4. Run Example
-
-Single prompt test:
-make run
-
-Or directly:
-python scripts/run_single_prompt.py
-
-## Project Structure
-
-bedrock-llm-comparison/
-├── app/                    # Application code
-│   ├── core/              # LLM clients (Bedrock, OpenAI, Gemini)
-│   ├── services/          # Business logic layer
-│   ├── utils/             # Utilities and helpers
-│   └── models/            # Data models
-├── config/                # Configuration files
-│   ├── settings.py        # Application settings
-│   └── models.yaml        # Model configurations
-├── data/                  # Data directory (gitignored)
-│   ├── input/            # Input prompts and protocols
-│   ├── output/           # Reports and logs
-│   └── cache/            # PDF text cache
-├── scripts/              # Execution scripts
-│   ├── run_single_prompt.py
-│   └── run_batch_comparison.py
-├── tests/                # Test suite
-│   ├── unit/
-│   └── integration/
-├── docs/                 # Documentation
-├── docker/               # Docker configurations
-├── requirements.txt      # Production dependencies
-├── requirements-dev.txt  # Development dependencies
-├── Makefile             # Common commands
-└── README.md
-
-## Configuration
-
-### Environment Variables
-
-Key environment variables (see .env.example):
-
-AWS Credentials:
+```env
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
 AWS_DEFAULT_REGION=us-east-1
+```
 
-Bedrock Regions:
-BEDROCK_TITAN_REGION=us-east-1
-BEDROCK_LLAMA_REGION=us-west-2
-BEDROCK_CLAUDE_REGION=us-east-1
+### 3. Add Your PDFs
 
-API Keys:
-OPENAI_API_KEY=your_openai_key
-GEMINI_API_KEY=your_gemini_key
+Place your medical protocol PDFs in:
+```
+data/input/protocols/
+```
 
-Application Settings:
-LOG_LEVEL=INFO
-CACHE_ENABLED=true
-DEFAULT_TEMPERATURE=0.7
-DEFAULT_MAX_TOKENS=512
+### 4. Build the Vector Index
 
-### Model Configuration
+```bash
+python scripts/rebuild_index.py
+```
 
-Edit config/models.yaml to:
-- Enable/disable specific models
-- Adjust default parameters
-- Configure regions
+This will:
+- Process all PDFs in `data/input/protocols/`
+- Create MedCPT embeddings
+- Save index to `data/vectordb_faiss_medcpt/`
 
-## Usage Examples
+### 5. Run a Query
 
-### Single Prompt Comparison
+```bash
+python scripts/run_multi_agent_rag.py "What are the HbA1c requirements?"
+```
 
-from app.services.comparison_service import ComparisonService
+**Options:**
+```bash
+# Use different LLM
+python scripts/run_multi_agent_rag.py "..." --model llama
 
-service = ComparisonService()
-results = service.compare_single_prompt(
-    prompt="Explain machine learning in 5 bullet points",
-    max_tokens=256,
-    temperature=0.7
-)
+# Get more sources
+python scripts/run_multi_agent_rag.py "..." --top-k 15
+```
 
-### Batch Processing
+**Available Models:** `claude`, `llama`, `mistral`, `gpt-oss`, `titan`
 
-from app.services.comparison_service import ComparisonService
+---
 
-service = ComparisonService()
-prompts = [
-    "Explain overfitting",
-    "What is gradient descent?",
-    "Describe neural networks"
-]
+## Output
 
-service.compare_batch(prompts, output_file="batch_results.xlsx")
+Results are automatically saved to:
+```
+data/output/rag_evaluation_YYYYMMDD_HHMMSS.txt
+```
 
-### From Text File
+Each file contains:
+- Query
+- Top 10 source documents (with exact paragraph text)
+- Research synthesis
+- Generated response with citations
+- Reviewer evaluation
+- Chairman analysis
 
-from app.services.comparison_service import ComparisonService
+---
 
-service = ComparisonService()
+## Project Structure
 
-with open('data/input/prompts/prompts.txt', 'r') as f:
-    prompts = [line.strip() for line in f if line.strip()]
+```
+bedrock-llm-comparison/
+├── app/
+│   ├── agents/
+│   │   └── multi_agent_rag.py    # Main 4-agent RAG system
+│   ├── services/
+│   │   ├── pdf_processor.py      # PDF extraction & chunking
+│   │   ├── vector_store.py       # FAISS vector database
+│   │   └── reranker.py           # Cross-encoder reranking
+│   └── core/
+│       └── unified_bedrock_client.py  # AWS Bedrock LLM
+│
+├── scripts/
+│   ├── run_multi_agent_rag.py    # CLI entry point
+│   └── rebuild_index.py          # Build vector index
+│
+├── data/
+│   ├── input/protocols/          # Your PDF files
+│   ├── output/                   # Query results
+│   └── vectordb_faiss_medcpt/    # Vector index
+│
+└── config/
+    └── settings.py               # Configuration
+```
 
-service.compare_batch(prompts)
+---
 
-### Custom Settings Per Prompt
+## How It Works
 
-from app.services.comparison_service import ComparisonService
+```
+User Query
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 1. MedCPT Embedding                 │
+│    Query → 768-dim vector           │
+└─────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 2. FAISS Search                     │
+│    Find top 50 similar chunks       │
+└─────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 3. Cross-Encoder Reranking          │
+│    Select top 10 most relevant      │
+└─────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 4. Multi-Agent Pipeline             │
+│    Research → Generator →           │
+│    Reviewer → Chairman              │
+└─────────────────────────────────────┘
+    │
+    ▼
+Answer + Sources (saved to file)
+```
 
-service = ComparisonService()
+---
 
-Medical query with conservative settings:
-service.compare_single_prompt(
-    prompt="Explain diabetes treatment options",
-    temperature=0.3,
-    max_tokens=200
-)
+## Requirements
 
-Creative task with higher temperature:
-service.compare_single_prompt(
-    prompt="Generate marketing copy",
-    temperature=1.0,
-    max_tokens=500
-)
+- Python 3.10+
+- AWS Account with Bedrock access
+- ~2GB disk space for models
 
-## Excel Output
-
-The tool generates Excel files with 5 comprehensive sheets:
-
-1. Summary: Overall statistics including total responses, unique providers, and models
-2. Provider_Model_Breakdown: Response counts per model for quick comparison
-3. Responses_Summary: Compact view with timestamps, parameters, and metadata
-4. Full_Responses: Complete response texts from all models
-5. Model_Comparison: Statistical analysis including average, min, and max response lengths
-
-Output files are saved to data/output/reports/ by default.
-
-
-## Development
-
-### Install Development Dependencies
-
-pip install -r requirements-dev.txt
-
-### Run Tests
-
-Run all tests:
-make test
-
-Run with coverage:
-pytest tests/ --cov=app --cov-report=html
-
-Run specific test file:
-pytest tests/unit/test_bedrock_client.py -v
-
-### Code Quality
-
-Format code:
-make format
-
-Lint code:
-make lint
-
-Run all quality checks:
-make format && make lint && make test
-
-## Docker Support
-
-Build image:
-docker-compose build
-
-Run container:
-docker-compose up
-
-Run with custom environment file:
-docker-compose --env-file .env.production up
-
+---
 
 ## Troubleshooting
 
-### AWS Credentials Issues
+### "Vector database not found"
+Run `python scripts/rebuild_index.py` first.
 
-Verify AWS credentials:
-aws sts get-caller-identity
+### "No PDFs found"
+Place PDF files in `data/input/protocols/`.
 
-Configure AWS CLI:
-aws configure
+### Slow import times
+If using iCloud, ensure files are downloaded locally.
 
-### Import Errors
-
-Ensure you're in the project root:
-cd /path/to/bedrock-llm-comparison
-
-Verify PYTHONPATH:
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-
-### Gemini Empty Responses
-
-Known issue: Gemini may return empty responses in some cases. This is under investigation. The model is disabled by default in config/models.yaml.
-
-
-## Documentation
-
-Detailed documentation available in docs/:
-
-- Architecture Overview
-- API Reference
-- Deployment Guide
-- User Guide
+---
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License
 
+---
 
+## Archived Scripts (Legacy)
 
-- Initial release
-- AWS Bedrock integration (Titan, LLaMA, Claude 3.5)
-- OpenAI GPT-4o-mini support
-- Google Gemini integration
-- Excel export functionality
-- Batch processing capabilities
+The following scripts have been moved to `archive/scripts/` for organization. They are still available for team members:
 
+| Script | Purpose |
+|--------|---------|
+| `multi_agent_evaluator.py` | Compare multiple LLMs (Claude, Llama, Mistral, etc.) |
+| `run_all_models.py` | Run all LLM models in parallel |
+| `compare_embeddings*.py` | Embedding model comparisons |
+| `demo_*.py` | Demo scripts for presentations |
+| `test_*.py` | Testing and benchmarking scripts |
+
+**To use archived scripts:**
+```bash
+python archive/scripts/run_all_models.py
+```

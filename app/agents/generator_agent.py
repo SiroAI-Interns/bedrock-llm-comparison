@@ -19,6 +19,36 @@ class GeneratorAgent:
         """
         self.generator_clients = generator_clients
 
+    def _is_reasoning_model(self, model_id: str) -> bool:
+        """Check if model is a reasoning model (o1-style)."""
+        reasoning_keywords = ["gpt-oss", "o1", "openai.gpt"]
+        return any(keyword in model_id.lower() for keyword in reasoning_keywords)
+
+    def _build_prompt(self, model_id, user_prompt, research_context, sources_text, generator_template):
+        if self._is_reasoning_model(model_id):
+            # ✅ EXPLICIT: Don't show reasoning
+            prompt = f"""You are a regulatory expert. Answer the following question directly without showing your reasoning process.
+
+    QUESTION:
+    {user_prompt}
+
+    REGULATORY GUIDANCE:
+    {research_context}
+
+    SOURCES:
+    {sources_text}
+
+    Provide your systematic analysis now (no reasoning tags, just the answer) Also make sure dont give your outputs in the form of tables give me in the form of text paragraphs and bullets:"""
+        else:
+            # Full template for regular models
+            prompt = generator_template.format(
+                query=user_prompt,
+                research_context=research_context,
+                sources=sources_text,
+            )
+        
+        return prompt
+
     def run(
         self,
         research_output: Dict,
@@ -35,7 +65,7 @@ class GeneratorAgent:
             Dictionary with blinded responses and mapping
         """
         print("\n" + "="*70)
-        print("AGENT 1: GENERATOR (WITH RESEARCH CONTEXT)")
+        print("AGENT 1: GENERATOR (WITH PDF RESEARCH CONTEXT)")
         print("="*70)
 
         # Use default template if not provided
@@ -46,21 +76,23 @@ class GeneratorAgent:
         research_context = research_output["research_context"]
         sources = research_output["sources"]
 
-        # Format sources with URLs for citation
+        # Format sources with document names and page numbers
         if sources:
-            sources_text = "Available sources with URLs:\n"
+            sources_text = "Available sources from guideline documents:\n"
             for s in sources:
-                sources_text += f"[{s['index']}] {s['title']}\n"
-                sources_text += f"    URL: {s['url']}\n\n"
+                if 'document' in s:
+                    # PDF source format
+                    sources_text += f"[{s['index']}] {s['document']} - Page {s['page']}\n"
+                    if 'relevance_score' in s:
+                        sources_text += f"    Relevance: {s['relevance_score']:.4f}\n\n"
+                elif 'title' in s:
+                    # Web source format
+                    sources_text += f"[{s['index']}] {s['title']}\n"
+                    sources_text += f"    URL: {s['url']}\n\n"
+                else:
+                    sources_text += f"[{s['index']}] Source {s['index']}\n\n"
         else:
             sources_text = "No sources available"
-
-        # Build enhanced prompt
-        enhanced_prompt = generator_template.format(
-            query=prompt,
-            research_context=research_context,
-            sources=sources_text,
-        )
 
         print(f"Generating responses from {len(self.generator_clients)} models...\n")
 
@@ -69,9 +101,24 @@ class GeneratorAgent:
         for name, client in self.generator_clients.items():
             try:
                 print(f"  ⏳ {name}...", end=" ")
+                
+                # Build model-specific prompt
+                enhanced_prompt = self._build_prompt(
+                    model_id=client.model_id,
+                    user_prompt=prompt,
+                    research_context=research_context,
+                    sources_text=sources_text,
+                    generator_template=generator_template
+                )
+                
+                # Add debug info for reasoning models
+                if self._is_reasoning_model(client.model_id):
+                    print(f"[reasoning model, simplified prompt]", end=" ")
+                
                 response = client.generate(enhanced_prompt)
                 raw_responses[name] = response.strip() if response else ""
                 print("✅")
+                
             except Exception as e:
                 print(f"❌ Error: {e}")
                 raw_responses[name] = ""

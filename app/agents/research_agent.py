@@ -1,144 +1,164 @@
 # app/agents/research_agent.py
-"""Agent 0: Research Agent - Gathers and synthesizes web search results."""
+"""Agent 0: Research Agent - Retrieves relevant information from PDF documents."""
 
 from typing import List, Dict, Optional
-import re
-from duckduckgo_search import DDGS
+from pathlib import Path
 from app.core.unified_bedrock_client import UnifiedBedrockClient
 from app.agents.templates import RESEARCH_SYNTHESIS_TEMPLATE
+from app.services.pdf_processor import PDFProcessor  # ← Your existing service
+from app.services.vector_store import VectorStore    # ← New service
 
+
+# app/agents/research_agent.py
 
 class ResearchAgent:
-    """Performs web research and synthesizes factual information."""
+    """Performs research using PDF documents and vector search."""
 
-    def __init__(self, research_client: UnifiedBedrockClient):
+    def __init__(
+        self,
+        research_client: UnifiedBedrockClient,
+        input_dir: Path = None,
+        vector_db_path: Path = None,
+        rebuild_index: bool = False,
+        embedding_model: str = "medcpt",           # ✅ NEW
+        use_hybrid: bool = False,                  # ✅ NEW
+        hybrid_models: Optional[List[str]] = None, # ✅ NEW
+        use_reranking: bool = False,               # ✅ NEW: Reranking flag
+        reranker_model: str = "ms-marco-mini",     # ✅ NEW: Reranker model
+        reranking_strategy: str = "cross-encoder", # ✅ NEW: Reranking strategy
+    ):
         """
-        Initialize Research Agent.
+        Initialize Research Agent with PDF-based RAG.
         
         Args:
-            research_client: Bedrock client for synthesizing research
+            research_client: LLM client for synthesis
+            input_dir: Directory containing PDF files
+            vector_db_path: Path to save/load vector database
+            rebuild_index: Force rebuild of vector index
+            embedding_model: Embedding model to use ("medcpt", "biobert", etc.)
+            use_hybrid: If True, combine multiple embedding models
+            hybrid_models: List of models to combine (e.g., ["medcpt", "biobert"])
+            use_reranking: If True, rerank search results for better precision
+            reranker_model: Reranker model to use (ms-marco-mini, ms-marco-medium, ms-marco-base)
+            reranking_strategy: Reranking strategy (cross-encoder, bm25, hybrid)
         """
         self.research_client = research_client
+        
+        # Set default paths
+        project_root = Path(__file__).parent.parent.parent
+        self.input_dir = input_dir or (project_root / "data" / "input" / "protocols")
+        self.vector_db_path = vector_db_path or (project_root / "data" / "vectordb")
+        
+        # Store embedding configuration
+        self.embedding_model = embedding_model
+        self.use_hybrid = use_hybrid
+        self.hybrid_models = hybrid_models or [embedding_model]
+        self.use_reranking = use_reranking
+        self.reranker_model = reranker_model
+        self.reranking_strategy = reranking_strategy
+        
+        # Initialize PDF processor
+        self.pdf_processor = PDFProcessor()
+        
+        # ✅ Initialize vector store with embedding and reranking configuration
+        self.vector_store = VectorStore(
+            embedding_model=embedding_model,
+            vector_db_path=self.vector_db_path,
+            use_hybrid=use_hybrid,
+            hybrid_models=hybrid_models,
+            use_reranking=use_reranking,
+            reranker_model=reranker_model,
+            reranking_strategy=reranking_strategy,
+        )
+        
+        # Load or build vector index
+        self._initialize_vector_store(rebuild_index)
 
-    def _is_mostly_english(self, text: str) -> bool:
+
+    def _initialize_vector_store(self, rebuild: bool = False):
         """
-        Check if text is mostly English (ASCII characters).
+        Load existing vector store or build new one from PDFs.
         
         Args:
-            text: Text to check
+            rebuild: Force rebuild even if saved index exists
+        """
+        # Try to load existing index
+        if not rebuild and self.vector_store.load():
+            print("✅ Using existing vector database\n")
+            return
         
-        Returns:
-            True if mostly English, False otherwise
-        """
-        if not text:
-            return True
-        ascii_count = sum(1 for c in text if ord(c) < 128)
-        return (ascii_count / len(text)) > 0.7
+        # Build new index from PDFs
+        print("\n🔄 Building new vector database from PDFs...")
+        
+        # Ensure input directory exists
+        self.input_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process all PDFs using your existing processor
+        chunks = self.pdf_processor.process_directory_with_chunks(str(self.input_dir))
+        
+        if not chunks:
+            print("⚠️  No PDF content to index. Add PDFs to data/input/")
+            return
+        
+        # Build vector index
+        self.vector_store.build_index(chunks)
+        
+        # Save for future use
+        self.vector_store.save()
 
-    def extract_search_query(self, user_prompt: str) -> str:
+    def retrieve_relevant_chunks(
+        self,
+        query: str,
+        top_k: int = 20  # ✅ CHANGED: Increased from 5 to 20 for better coverage
+    ) -> List[Dict]:
         """
-        Extract key search terms from user prompt.
-        Removes instructional language like "Explain", "Answer in X sentences", etc.
+        Retrieve most relevant document chunks for a query.
+        
+        Uses high-recall strategy: fetches many candidates, then reranks to find
+        the most relevant. This prevents missing critical FDA requirements.
         
         Args:
-            user_prompt: Original user query
+            query: User's search query
+            top_k: Number of final chunks to return (default: 20)
         
         Returns:
-            Cleaned search query with key terms
+            List of relevant chunks with metadata, ranked by relevance
         """
-        extraction_prompt = f"""Extract the core topic/keywords from this query for web searching.
-Remove instructional words like "explain", "describe", "answer in X sentences", etc.
-Return ONLY the key search terms, nothing else.
-
-Query: {user_prompt}
-
-Search terms:"""
+        # ✅ HIGH-RECALL STRATEGY: Fetch MORE candidates before reranking
+        # This ensures we don't miss relevant documents at position k+1, k+2, etc.
+        if self.use_reranking:
+            # Fetch 3x more candidates, then rerank to top_k
+            fetch_k = top_k * 3  # e.g., fetch 60, rerank to top-20
+            print(f"   🔍 High-recall mode: Fetching {fetch_k} candidates, will rerank to top-{top_k}")
+        else:
+            # No reranking, just fetch what we need
+            fetch_k = top_k
         
-        try:
-            search_query = self.research_client.generate(extraction_prompt).strip()
-            return search_query.strip('"').strip("'")
-        except Exception as e:
-            print(f"⚠️  Query extraction failed, using fallback: {e}")
-            # Fallback: simple regex cleanup
-            cleaned = re.sub(
-                r'^(explain|describe|what is|tell me about|answer)\s+',
-                '', user_prompt, flags=re.IGNORECASE
-            )
-            cleaned = re.sub(r'\.\s*answer in.*$', '', cleaned, flags=re.IGNORECASE)
-            return cleaned.strip()
-
-    def web_search(self, query: str, max_results: int = 5) -> List[Dict]:
-        """
-        Perform web search using DuckDuckGo (free, no API key needed).
-        Returns English results only.
+        # Search with expanded candidate pool
+        results = self.vector_store.search(query, top_k=fetch_k)
         
-        Args:
-            query: Search query
-            max_results: Number of results to return
-        
-        Returns:
-            List of dicts with 'title', 'url', 'snippet'
-        """
-        try:
-            # Force English results by setting region
-            with DDGS() as ddgs:
-                results = list(ddgs.text(
-                    query,
-                    region="us-en",
-                    safesearch="moderate",
-                    max_results=max_results * 2  # Get extra to filter
-                ))
-            
-            # Filter for English content only
-            english_results = []
-            for r in results:
-                title = r.get("title", "No title")
-                snippet = r.get("body", "")
-                
-                if self._is_mostly_english(title) and self._is_mostly_english(snippet):
-                    english_results.append({
-                        "title": title,
-                        "url": r.get("href", ""),
-                        "snippet": snippet[:500],
-                    })
-                    if len(english_results) >= max_results:
-                        break
-            
-            # Fallback if no English results
-            if not english_results:
-                print("⚠️  No English results found, using all results...")
-                return [
-                    {
-                        "title": r.get("title", "No title"),
-                        "url": r.get("href", ""),
-                        "snippet": r.get("body", "")[:500],
-                    }
-                    for r in results[:max_results]
-                ]
-            
-            return english_results
-            
-        except Exception as e:
-            print(f"⚠️  Web search error: {e}")
-            return []
+        # Return top_k (reranking already happened in vector_store.search if enabled)
+        return results[:top_k]
 
     def run(
         self,
         prompt: str,
-        synthesis_template: Optional[str] = None
+        synthesis_template: Optional[str] = None,
+        top_k: int = 5
     ) -> Dict:
         """
-        Run research agent to gather and synthesize information.
+        Run research agent to retrieve and synthesize PDF-based information.
         
         Args:
-            prompt: User's query to research
-            synthesis_template: Custom template for synthesizing research
+            prompt: User's query
+            synthesis_template: Custom template for synthesis
+            top_k: Number of document chunks to retrieve
         
         Returns:
             Dictionary with research context and sources
         """
         print("\n" + "="*70)
-        print("AGENT 0: RESEARCH AGENT")
+        print("AGENT 0: RESEARCH AGENT (PDF-BASED)")
         print("="*70)
         print(f"📚 Researching: {prompt[:100]}...\n")
 
@@ -146,45 +166,51 @@ Search terms:"""
         if synthesis_template is None:
             synthesis_template = RESEARCH_SYNTHESIS_TEMPLATE
 
-        # Extract key search terms
-        print("🔍 Extracting search terms from query...")
-        search_query = self.extract_search_query(prompt)
-        print(f"📝 Search query: {search_query}\n")
+        # Retrieve relevant chunks
+        print(f"🔍 Searching vector database for relevant information...")
+        relevant_chunks = self.retrieve_relevant_chunks(prompt, top_k=top_k)
 
-        # Perform web search
-        print("🌐 Searching the web for factual information...")
-        search_results = self.web_search(search_query, max_results=5)
-
-        if not search_results:
-            print("⚠️  No search results found, proceeding without research context")
+        if not relevant_chunks:
+            print("⚠️  No relevant information found in PDFs")
             return {
                 "prompt": prompt,
-                "research_context": "No web research available.",
+                "research_context": "No relevant information found in guideline documents.",
                 "sources": [],
                 "raw_search_results": "",
             }
 
-        print(f"✅ Found {len(search_results)} sources\n")
+        print(f"✅ Found {len(relevant_chunks)} relevant chunks\n")
 
-        # Format search results for synthesis
+        # Format chunks for synthesis
         search_text = ""
         sources = []
+        seen_sources = set()  # Track unique sources
         
-        for idx, result in enumerate(search_results, 1):
-            title = result.get("title", "No title")
-            url = result.get("url", "")
-            snippet = result.get("snippet", "")
+        for idx, chunk in enumerate(relevant_chunks, 1):
+            source_name = chunk["source"]
+            page_num = chunk["page"]
+            text = chunk["text"]
+            score = chunk.get("relevance_score", 0)  # ✅ FIXED: Use "relevance_score" not "score"
             
-            search_text += f"\n[Source {idx}] {title}\n"
-            search_text += f"URL: {url}\n"
-            search_text += f"Content: {snippet}\n"
+            search_text += f"\n[Source {idx}] {source_name} - Page {page_num}\n"
+            search_text += f"Relevance Score: {score:.4f}\n"
+            search_text += f"Content: {text}\n"
             search_text += "-" * 60 + "\n"
             
-            sources.append({"index": idx, "title": title, "url": url})
+            # Track unique sources for citation
+            source_key = f"{source_name}_p{page_num}"
+            if source_key not in seen_sources:
+                sources.append({
+                    "index": idx,
+                    "document": source_name,
+                    "page": page_num,
+                    "relevance_score": score  # ✅ FIXED: This was already correct
+                })
+                seen_sources.add(source_key)
             
             # Print source for visibility
-            print(f"  [{idx}] {title[:70]}...")
-            print(f"      {url}")
+            print(f"  [{idx}] {source_name} - Page {page_num}")
+            print(f"      Relevance: {score:.4f}")  # ✅ This will now show correct score!
 
         # Build research prompt
         research_prompt = synthesis_template.format(
@@ -192,9 +218,9 @@ Search terms:"""
             search_results=search_text,
         )
 
-        print("\n🤖 Synthesizing research findings...")
+        print("\n🤖 Synthesizing research findings from guidelines...")
         research_context = self.research_client.generate(research_prompt)
-        print(f"✅ Research complete - {len(sources)} sources gathered\n")
+        print(f"✅ Research complete - {len(sources)} source(s) cited\n")
 
         return {
             "prompt": prompt,

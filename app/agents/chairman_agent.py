@@ -92,11 +92,27 @@ class ChairmanAgent:
                 individual_reviews_text += f"  • {label}: {review['score']}/10\n"
                 individual_reviews_text += f"    Reasoning: {review['reasoning']}\n"
 
-        # Format sources
-        sources_text = "\n".join([
-            f"[{s['index']}] {s['title']}\n    {s['url']}"
-            for s in sources
-        ]) if sources else "No sources available"
+        # Format sources - UPDATED to handle both PDF and web sources
+        if sources:
+            sources_list = []
+            for s in sources:
+                # Check if it's a PDF source or web source
+                if 'document' in s:
+                    # PDF source format
+                    source_line = f"[{s['index']}] {s['document']} - Page {s['page']}"
+                    if 'relevance_score' in s:
+                        source_line += f"\n    Relevance: {s['relevance_score']:.4f}"
+                    sources_list.append(source_line)
+                elif 'title' in s:
+                    # Web source format (backward compatibility)
+                    sources_list.append(f"[{s['index']}] {s['title']}\n    {s['url']}")
+                else:
+                    # Unknown format fallback
+                    sources_list.append(f"[{s['index']}] Source {s['index']}")
+            
+            sources_text = "\n\n".join(sources_list)
+        else:
+            sources_text = "No sources available"
 
         # Build chairman prompt
         chairman_prompt = chairman_template.format(
@@ -134,7 +150,7 @@ RESEARCH CONTEXT PROVIDED TO ALL MODELS
 {research_context}
 
 {'='*70}
-SOURCES (With URLs)
+SOURCES (From FDA Guidelines)
 {'='*70}
 {sources_text}
 
@@ -160,7 +176,7 @@ EVALUATION STATISTICS
 ✅ Models evaluated: {len(responses)}
 ✅ Reviews per response: {len(reviews)}
 ✅ Total reviews: {len(reviews) * len(responses)}
-✅ Analysis includes factual accuracy verification
+✅ Analysis includes factual accuracy verification using FDA guidelines
 
 {'='*70}
 """

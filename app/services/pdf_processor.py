@@ -1,3 +1,4 @@
+# app/services/pdf_processor.py
 """PDF and document processing service."""
 
 import os
@@ -10,6 +11,11 @@ try:
     import docx
 except ImportError:
     docx = None
+
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    RecursiveCharacterTextSplitter = None
 
 
 class PDFProcessor:
@@ -179,3 +185,201 @@ class PDFProcessor:
             chunks.append(" ".join(current_chunk))
         
         return chunks
+    
+    # ==================== NEW METHODS (For Vector RAG) ====================
+    
+    def extract_text_with_pages(self, pdf_path: str) -> List[Dict]:
+        """
+        Extract text from PDF with page-level metadata.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            
+        Returns:
+            List of dicts with text and page metadata
+        """
+        pages_data = []
+        
+        try:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                
+                for page_num, page in enumerate(reader.pages, start=1):
+                    page_text = page.extract_text()
+                    
+                    if page_text.strip():  # Only include non-empty pages
+                        pages_data.append({
+                            "text": page_text,
+                            "page": page_num,
+                            "source": Path(pdf_path).name,
+                            "total_pages": len(reader.pages)
+                        })
+        
+        except Exception as e:
+            print(f"Error reading PDF {pdf_path}: {e}")
+            return []
+        
+        return pages_data
+    
+    def chunk_text_with_metadata(
+        self, 
+        text: str, 
+        page_num: int, 
+        source: str,
+        chunk_size: int = 1500,  # Increased for better context
+        chunk_overlap: int = 300  # Increased overlap
+    ) -> List[Dict]:
+        """
+        Chunk text with metadata preservation.
+        
+        IMPROVED: Splits by paragraph boundaries first to avoid cutting mid-sentence.
+        
+        Args:
+            text: Text to chunk
+            page_num: Page number
+            source: Source document name
+            chunk_size: Maximum chunk size
+            chunk_overlap: Overlap between chunks
+            
+        Returns:
+            List of chunks with metadata
+        """
+        # First, split by paragraph boundaries (double newline or single newline)
+        paragraphs = []
+        for para in text.split('\n\n'):
+            if para.strip():
+                paragraphs.append(para.strip())
+        
+        # If no paragraphs found, split by single newline
+        if len(paragraphs) <= 1:
+            paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+        
+        # Now combine paragraphs into chunks, respecting size limits
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for para in paragraphs:
+            para_size = len(para)
+            
+            # If single paragraph exceeds chunk_size, we have to split it
+            if para_size > chunk_size:
+                # Save current chunk first
+                if current_chunk:
+                    chunks.append('\n\n'.join(current_chunk))
+                    current_chunk = []
+                    current_size = 0
+                
+                # Split large paragraph by sentences (look for . followed by space or newline)
+                import re
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                sentence_chunk = []
+                sentence_size = 0
+                
+                for sentence in sentences:
+                    if sentence_size + len(sentence) > chunk_size and sentence_chunk:
+                        chunks.append(' '.join(sentence_chunk))
+                        sentence_chunk = [sentence]
+                        sentence_size = len(sentence)
+                    else:
+                        sentence_chunk.append(sentence)
+                        sentence_size += len(sentence)
+                
+                if sentence_chunk:
+                    chunks.append(' '.join(sentence_chunk))
+            
+            # If adding this paragraph exceeds the limit, save current chunk
+            elif current_size + para_size > chunk_size:
+                if current_chunk:
+                    chunks.append('\n\n'.join(current_chunk))
+                current_chunk = [para]
+                current_size = para_size
+            else:
+                current_chunk.append(para)
+                current_size += para_size
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+        
+        # Create chunk metadata
+        chunk_results = []
+        for chunk_idx, chunk_text in enumerate(chunks):
+            chunk_results.append({
+                "text": chunk_text,
+                "page": page_num,
+                "paragraph_number": chunk_idx + 1,  # Track which paragraph/chunk on this page
+                "chunk_id": f"{source}_p{page_num}_c{chunk_idx}",
+                "source": source
+            })
+        
+        return chunk_results
+    
+    def process_pdf_with_chunks(self, pdf_path: str) -> List[Dict]:
+        """
+        Process PDF and create chunks with page metadata.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            List of chunks with metadata
+        """
+        print(f"📄 Processing: {Path(pdf_path).name}")
+        
+        # Extract text with page info
+        pages_data = self.extract_text_with_pages(pdf_path)
+        
+        if not pages_data:
+            print(f"⚠️  No text extracted from {Path(pdf_path).name}")
+            return []
+        
+        print(f"   ✅ Extracted {len(pages_data)} pages")
+        
+        # Chunk each page
+        all_chunks = []
+        for page_data in pages_data:
+            chunks = self.chunk_text_with_metadata(
+                text=page_data["text"],
+                page_num=page_data["page"],
+                source=page_data["source"]
+            )
+            all_chunks.extend(chunks)
+        
+        print(f"   ✅ Created {len(all_chunks)} chunks")
+        
+        return all_chunks
+    
+    def process_directory_with_chunks(self, directory: str) -> List[Dict]:
+        """
+        Process all PDFs in directory and create chunks with metadata.
+        
+        Args:
+            directory: Path to directory containing PDFs
+            
+        Returns:
+            List of all chunks from all PDFs with metadata
+        """
+        directory_path = Path(directory)
+        if not directory_path.exists():
+            print(f"Error: Directory {directory} does not exist")
+            return []
+        
+        all_chunks = []
+        pdf_files = list(directory_path.glob("*.pdf"))
+        
+        if not pdf_files:
+            print(f"⚠️  No PDF files found in {directory}")
+            return []
+        
+        print(f"\n📚 Found {len(pdf_files)} PDF file(s) in {directory_path.name}/")
+        print("="*70)
+        
+        for pdf_path in pdf_files:
+            chunks = self.process_pdf_with_chunks(str(pdf_path))
+            all_chunks.extend(chunks)
+        
+        print("="*70)
+        print(f"✅ Total chunks created: {len(all_chunks)}\n")
+        
+        return all_chunks

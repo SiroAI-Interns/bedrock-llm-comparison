@@ -13,7 +13,7 @@ class UnifiedBedrockClient:
         self,
         model_id: str,
         region_name: str = "us-east-1",
-        max_tokens: int = 2000,
+        max_tokens: int = None,  # ← Changed to None for auto-detection
         temperature: float = 0.2,
         top_p: float = 0.9,
         top_k: int = 50
@@ -24,17 +24,27 @@ class UnifiedBedrockClient:
         Args:
             model_id: Full Bedrock model ID (e.g., 'meta.llama3-70b-instruct-v1:0')
             region_name: AWS region
-            max_tokens: Maximum tokens to generate
+            max_tokens: Maximum tokens to generate (auto-detected if None)
             temperature: Sampling temperature (0.0-1.0)
             top_p: Nucleus sampling parameter
             top_k: Top-k sampling parameter
         """
         self.model_id = model_id
         self.region_name = region_name
-        self.max_tokens = max_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
+        
+        # ========== AUTO-DETECT MAX TOKENS BASED ON MODEL ==========
+        if max_tokens is None:
+            # Reasoning models need MORE tokens (they output thinking process)
+            if any(x in model_id.lower() for x in ["gpt-oss", "llama3-1", "deepseek", "r1"]):
+                self.max_tokens = 8000  # ← HIGH for reasoning chains
+                print(f"   🧠 Reasoning model detected: using {self.max_tokens} max_tokens")
+            else:
+                self.max_tokens = 4000  # ← DEFAULT for normal models
+        else:
+            self.max_tokens = max_tokens
         
         # Initialize Bedrock client
         self.client = boto3.client("bedrock-runtime", region_name=region_name)
@@ -123,7 +133,7 @@ class UnifiedBedrockClient:
                             "content": prompt
                         }
                     ],
-                    "max_completion_tokens": self.max_tokens,
+                    "max_completion_tokens": self.max_tokens,  # ← Uses self.max_tokens now
                     "temperature": self.temperature,
                     "top_p": self.top_p,
                 })
@@ -157,30 +167,24 @@ class UnifiedBedrockClient:
             
             # ==================== STEP 4: PARSE RESPONSE ====================
             if self.model_id.startswith("anthropic.claude"):
-                # Claude: content array
                 return response_body.get("content", [{}])[0].get("text", "")
             
             elif self.model_id.startswith("meta.llama"):
-                # Llama: generation field
                 return response_body.get("generation", "")
             
             elif self.model_id.startswith("mistral.mistral"):
-                # Mistral: outputs array
                 outputs = response_body.get("outputs", [])
                 return outputs[0].get("text", "") if outputs else ""
             
             elif self.model_id.startswith("amazon.titan"):
-                # Titan: results array
                 results = response_body.get("results", [])
                 return results[0].get("outputText", "") if results else ""
             
             elif self.model_id.startswith("us.deepseek"):
-                # DeepSeek: choices array
                 choices = response_body.get("choices", [])
                 return choices[0].get("text", "") if choices else ""
             
             elif self.model_id.startswith("openai.gpt-oss"):
-                # OpenAI OSS: choices with message
                 choices = response_body.get("choices", [])
                 if choices:
                     message = choices[0].get("message", {})
@@ -188,10 +192,6 @@ class UnifiedBedrockClient:
                 return ""
             
             elif self.model_id.startswith("google.gemma"):
-                # Gemma: Try multiple response formats
-                # Could be: choices[0].message.content OR generated_text OR output
-                
-                # Format 1: OpenAI-style choices
                 choices = response_body.get("choices", [])
                 if choices:
                     message = choices[0].get("message", {})

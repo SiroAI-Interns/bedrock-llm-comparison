@@ -27,8 +27,13 @@ python-docx>=0.8.11
 # JSON Schema & Validation
 pydantic>=2.0.0
 uuid
-
-
-crew-ai>=0.8.0
-crewai_tools>=0.8.0
+# Vector Stores & Embeddings
 duckduckgo-search>=2.0.0
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+langchain-text-splitters>=0.0.1
+numpy>=1.24.0
+
+# Reranking for RAG
+rank-bm25>=0.2.2
+# Note: cross-encoder models are loaded via sentence-transformers
