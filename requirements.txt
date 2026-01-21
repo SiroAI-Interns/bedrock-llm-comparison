@@ -37,3 +37,6 @@ numpy>=1.24.0
 # Reranking for RAG
 rank-bm25>=0.2.2
 # Note: cross-encoder models are loaded via sentence-transformers
+
+# Pinecone Vector Database
+pinecone>=5.0.0

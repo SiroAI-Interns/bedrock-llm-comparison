@@ -2,7 +2,11 @@
 """
 Multi-Agent RAG System with MedCPT Embeddings and Cross-Encoder Reranking
 
-This is the complete multi-agent RAG flow with:
+Supports two backends:
+- FAISS (local, default)
+- Pinecone (cloud)
+
+Features:
 - MedCPT embeddings (single model, optimized for medical text)
 - Cross-encoder reranking for precision
 - 4-agent pipeline: Research → Generator → Reviewer → Chairman
@@ -12,11 +16,16 @@ This is the complete multi-agent RAG flow with:
 Usage:
     from app.agents.multi_agent_rag import MultiAgentRAG
     
-    rag = MultiAgentRAG()
+    # FAISS (local)
+    rag = MultiAgentRAG(backend="faiss")
+    
+    # Pinecone (cloud)
+    rag = MultiAgentRAG(backend="pinecone")
+    
     result = rag.evaluate("What are the HbA1c requirements?")
-    # Results auto-saved to data/output/
 """
 
+import os
 import sys
 import json
 from pathlib import Path
@@ -29,8 +38,6 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import numpy as np
-import faiss
-import pickle
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from app.core.unified_bedrock_client import UnifiedBedrockClient
@@ -186,7 +193,9 @@ class MultiAgentRAG:
     
     def __init__(
         self,
+        backend: str = "faiss",
         vector_db_path: Optional[Path] = None,
+        pinecone_index: str = "medical-protocols",
         llm_model: str = "claude",
         top_k: int = 10,
         initial_candidates: int = 50,
@@ -195,14 +204,18 @@ class MultiAgentRAG:
         Initialize the Multi-Agent RAG System.
         
         Args:
-            vector_db_path: Path to MedCPT vector database
+            backend: Vector store backend ("faiss" or "pinecone")
+            vector_db_path: Path to FAISS database (for faiss backend)
+            pinecone_index: Pinecone index name (for pinecone backend)
             llm_model: LLM to use (claude, gpt-oss, mistral, llama, titan)
             top_k: Number of sources to use after reranking
             initial_candidates: Number of candidates to fetch before reranking
         """
+        self.backend = backend
         self.top_k = top_k
         self.initial_candidates = initial_candidates
         self.llm_model = llm_model
+        self.pinecone_index = pinecone_index
         
         # Set paths
         if vector_db_path is None:
@@ -212,23 +225,19 @@ class MultiAgentRAG:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         print("\n" + "="*70)
-        print("MULTI-AGENT RAG SYSTEM")
+        print(f"MULTI-AGENT RAG SYSTEM ({backend.upper()} backend)")
         print("="*70)
-        
-        # Load MedCPT embedding model
-        print("\n📚 Loading MedCPT embedding model...")
-        self.query_encoder = SentenceTransformer("ncbi/MedCPT-Query-Encoder")
-        self.embedding_dim = 768
-        print(f"   ✅ Embedding dimension: {self.embedding_dim}")
         
         # Load cross-encoder reranker
         print("\n🔄 Loading cross-encoder reranker...")
         self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
         print("   ✅ Reranker loaded")
         
-        # Load vector database
-        print(f"\n💾 Loading vector database...")
-        self._load_vector_db()
+        # Load vector database based on backend
+        if backend == "pinecone":
+            self._load_pinecone()
+        else:
+            self._load_faiss()
         
         # Initialize LLM clients
         print(f"\n🤖 Initializing LLM client: {llm_model}")
@@ -238,13 +247,21 @@ class MultiAgentRAG:
         print("✅ System ready")
         print("="*70 + "\n")
     
-    def _load_vector_db(self):
-        """Load the FAISS index and document chunks."""
+    def _load_faiss(self):
+        """Load local FAISS index."""
+        import faiss
+        import pickle
+        
+        print(f"\n💾 Loading FAISS database...")
+        
         index_file = self.vector_db_path / "faiss.index"
         metadata_file = self.vector_db_path / "metadata.pkl"
         
         if not index_file.exists():
-            raise FileNotFoundError(f"Vector database not found at {self.vector_db_path}")
+            raise FileNotFoundError(
+                f"FAISS index not found at {self.vector_db_path}. "
+                "Run: python scripts/rebuild_index.py --backend faiss"
+            )
         
         self.index = faiss.read_index(str(index_file))
         
@@ -257,7 +274,19 @@ class MultiAgentRAG:
             with open(chunks_file, 'rb') as f:
                 self.chunks = pickle.load(f)
         
+        # Load embedding model for FAISS search
+        print("\n📚 Loading MedCPT embedding model...")
+        self.query_encoder = SentenceTransformer("ncbi/MedCPT-Query-Encoder")
+        
         print(f"   ✅ Loaded {len(self.chunks)} chunks, {self.index.ntotal} vectors")
+    
+    def _load_pinecone(self):
+        """Load Pinecone cloud store."""
+        from app.services.pinecone_store import PineconeStore
+        
+        print(f"\n☁️ Connecting to Pinecone...")
+        self.pinecone_store = PineconeStore(index_name=self.pinecone_index)
+        print(f"   ✅ Connected to Pinecone index: {self.pinecone_index}")
     
     def _init_llm_clients(self):
         """Initialize LLM clients for each agent."""
@@ -287,14 +316,20 @@ class MultiAgentRAG:
             max_tokens=2000, temperature=0.3
         )
     
-    def _embed_query(self, query: str) -> np.ndarray:
-        """Embed a query using MedCPT."""
-        embedding = self.query_encoder.encode(query, convert_to_numpy=True)
-        return embedding.astype('float32').reshape(1, -1)
-    
     def _search(self, query: str, top_k: int) -> List[Dict]:
-        """Search the vector database."""
-        query_embedding = self._embed_query(query)
+        """Search the vector database (works with both backends)."""
+        if self.backend == "pinecone":
+            return self._search_pinecone(query, top_k)
+        else:
+            return self._search_faiss(query, top_k)
+    
+    def _search_faiss(self, query: str, top_k: int) -> List[Dict]:
+        """Search local FAISS index."""
+        import faiss
+        
+        embedding = self.query_encoder.encode(query, convert_to_numpy=True)
+        query_embedding = embedding.astype('float32').reshape(1, -1)
+        
         distances, indices = self.index.search(query_embedding, top_k)
         
         results = []
@@ -305,6 +340,11 @@ class MultiAgentRAG:
                 chunk["chunk_index"] = int(idx)
                 results.append(chunk)
         
+        return results
+    
+    def _search_pinecone(self, query: str, top_k: int) -> List[Dict]:
+        """Search Pinecone cloud index."""
+        results = self.pinecone_store.search(query, top_k=top_k)
         return results
     
     def _rerank(self, query: str, candidates: List[Dict], top_k: int) -> List[Dict]:
@@ -556,15 +596,25 @@ def main():
     
     parser = argparse.ArgumentParser(description="Multi-Agent RAG Evaluation")
     parser.add_argument("query", type=str, help="The question to answer")
+    parser.add_argument("--backend", "-b", type=str, default="faiss",
+                       choices=["faiss", "pinecone"],
+                       help="Vector store backend (default: faiss)")
     parser.add_argument("--model", "-m", type=str, default="claude",
                        choices=["claude", "gpt-oss", "mistral", "llama", "titan"],
                        help="LLM model to use")
     parser.add_argument("--top-k", "-k", type=int, default=10,
                        help="Number of sources after reranking")
+    parser.add_argument("--index-name", type=str, default="medical-protocols",
+                       help="Pinecone index name (for pinecone backend)")
     
     args = parser.parse_args()
     
-    rag = MultiAgentRAG(llm_model=args.model, top_k=args.top_k)
+    rag = MultiAgentRAG(
+        backend=args.backend,
+        pinecone_index=args.index_name,
+        llm_model=args.model,
+        top_k=args.top_k
+    )
     result = rag.evaluate(args.query)
     
     print("\n📝 FINAL RESPONSE:\n")

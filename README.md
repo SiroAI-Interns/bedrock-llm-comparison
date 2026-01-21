@@ -160,6 +160,36 @@ Answer + Sources (saved to file)
 
 ---
 
+## Pinecone (Cloud Storage)
+
+For cloud-based vector storage, you can use Pinecone instead of local FAISS.
+
+### Setup
+
+1. Create an account at [pinecone.io](https://pinecone.io) (free tier: 1 index, 100K vectors)
+
+2. Add to `.env`:
+   ```env
+   PINECONE_API_KEY=your_api_key
+   PINECONE_ENVIRONMENT=us-east-1
+   ```
+
+3. Build index with Pinecone:
+   ```bash
+   python scripts/rebuild_index.py --backend pinecone
+   ```
+
+4. Run queries:
+   ```bash
+   python scripts/run_multi_agent_rag.py "What are the HbA1c requirements?" --backend pinecone
+   ```
+
+### Multi-PDF Support
+
+Pinecone automatically indexes all PDFs in `data/input/protocols/` with document metadata. When querying, results are returned from ALL documents ranked by relevance.
+
+---
+
 ## Troubleshooting
 
 ### "Vector database not found"
