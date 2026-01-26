@@ -411,22 +411,28 @@ class MultiAgentRAG:
         
         print("="*70 + "\n")
     
-    def evaluate(self, query: str) -> Dict:
+    def evaluate(self, query: str, search_query: str = None) -> Dict:
         """
         Run the full 4-agent evaluation pipeline.
         
         Args:
-            query: The question to answer
+            query: The full question/context to answer (used for LLM analysis)
+            search_query: Optional specific query for vector search (if different from query)
             
         Returns:
             Dictionary with full evaluation results
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Use provided search_query for retrieval, otherwise use the full query
+        retrieval_query = search_query if search_query else query
+        
         print("\n" + "="*70)
         print("STARTING MULTI-AGENT EVALUATION")
         print("="*70)
-        print(f"\n📝 Query: {query}\n")
+        print(f"\n📝 Analysis Query: {query[:100]}...")
+        if search_query:
+            print(f"🔎 Retrieval Query: {search_query}")
         
         # ==================== AGENT 0: RESEARCH ====================
         print("\n" + "-"*70)
@@ -435,12 +441,12 @@ class MultiAgentRAG:
         
         # Step 1: Search for candidates
         print(f"🔍 Searching for {self.initial_candidates} candidates...")
-        candidates = self._search(query, top_k=self.initial_candidates)
+        candidates = self._search(retrieval_query, top_k=self.initial_candidates)
         print(f"   Found {len(candidates)} candidates")
         
         # Step 2: Rerank with cross-encoder
         print(f"🔄 Reranking to top {self.top_k}...")
-        reranked = self._rerank(query, candidates, top_k=self.top_k)
+        reranked = self._rerank(retrieval_query, candidates, top_k=self.top_k)
         sources = self._format_sources(reranked)
         
         # Print top 10 docs in terminal
@@ -506,6 +512,7 @@ class MultiAgentRAG:
         # ==================== SAVE RESULTS ====================
         result = {
             "query": query,
+            "search_query": retrieval_query,
             "timestamp": timestamp,
             "model_used": self.llm_model,
             "sources": [
